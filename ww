@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contact & Country Analysis</title>
+    <!-- Load Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configure Tailwind to use Inter font -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <div id="app-container" class="w-full max-w-lg bg-white p-8 rounded-2xl shadow-2xl border border-gray-100">
+        <!-- Content will be rendered here by JavaScript -->
+    </div>
+
+    <!-- Load Firebase Libraries -->
+    <script type="module">
+        import { initializeApp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // =========================================================
+        // 1. GLOBAL VARIABLES & INITIALIZATION
+        // =========================================================
+
+        // Global variables provided by the Canvas environment (conditional check for external use)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db = null;
+        let auth = null;
+        let userId = null;
+        let isAuthReady = false;
+
+        let isSubmitting = false;
+        let isPredicting = false;
+        
+        // --- Utility Functions ---
+
+        const select = (selector) => document.querySelector(selector);
+        const htmlToElement = (html) => {
+            const template = document.createElement('template');
+            template.innerHTML = html.trim();
+            return template.content.firstChild;
+        };
+
+        const getIcon = (iconName, classes = "w-5 h-5") => {
+            // Placeholder function since we don't have a direct Lucide CDN import for JS
+            const icons = {
+                User: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`,
+                Phone: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-3.67-4.14 19.5 19.5 0 0 1-4.14-3.67A19.79 19.79 0 0 1 2 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>`,
+                CheckCircle: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><path d="M22 11.08V12a10 10 0 1 1-5.6-8.2"></path><path d="M15 3l2 2l4-4"></path></svg>`,
+                Globe: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a14.5 14.5 0 0 0 0 20a14.5 14.5 0 0 0 0-20"></path><path d="M2 12h20"></path></svg>`,
+                Loader: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><path d="M12 2v4"></path><path d="M6.34 6.34l2.83 2.83"></path><path d="M4 12h4"></path><path d="M6.34 17.66l2.83-2.83"></path><path d="M12 20v-4"></path><path d="M17.66 17.66l-2.83-2.83"></path><path d="M20 12h-4"></path><path d="M17.66 6.34l-2.83 2.83"></path></svg>`,
+                AlertTriangle: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12" y2="17"></line></svg>`,
+            };
+            return icons[iconName] || '';
+        };
+
+        // --- UI Rendering Functions ---
+
+        const updateStatus = (message, type) => {
+            const statusEl = select('#status-message');
+            if (!statusEl) return;
+
+            if (!message) {
+                statusEl.innerHTML = '';
+                return;
+            }
+
+            let classes = 'p-4 rounded-xl mb-6 flex items-start shadow-lg text-sm';
+            let iconHtml = '';
+
+            switch (type) {
+                case 'success':
+                    classes += ' bg-green-50 border border-green-200 text-green-700';
+                    iconHtml = getIcon('CheckCircle', 'w-5 h-5 mr-3');
+                    break;
+                case 'error':
+                    classes += ' bg-red-50 border border-red-200 text-red-700';
+                    iconHtml = getIcon('AlertTriangle', 'w-5 h-5 mr-3');
+                    break;
+                case 'info':
+                default:
+                    classes += ' bg-blue-50 border border-blue-200 text-blue-700';
+                    iconHtml = getIcon('Loader', 'w-5 h-5 mr-3 animate-spin');
+                    break;
+            }
+
+            statusEl.className = classes;
+            statusEl.innerHTML = `${iconHtml}<p class="font-medium">${message}</p>`;
+        };
+        
+        const renderPrediction = (text) => {
+            const resultEl = select('#prediction-result');
+            if (!resultEl) return;
+
+            if (isPredicting) {
+                resultEl.innerHTML = `
+                    <div class="bg-indigo-50 border border-indigo-200 p-6 rounded-xl mb-6 flex items-center justify-center text-indigo-700 shadow-md">
+                        ${getIcon('Loader', 'w-5 h-5 mr-3 animate-spin')}
+                        <p class="font-semibold">Gemini is analyzing the data...</p>
+                    </div>
+                `;
+            } else if (text) {
+                resultEl.innerHTML = `
+                    <div class="bg-white border border-gray-200 p-6 rounded-xl mb-6 shadow-xl">
+                        <div class="flex items-center mb-3">
+                            ${getIcon('Globe', 'w-6 h-6 mr-3 text-indigo-600')}
+                            <h3 class="text-lg font-bold text-gray-800">Country Prediction</h3>
+                        </div>
+                        <div class="bg-gray-50 p-4 rounded-lg text-gray-700">
+                            <p class="text-sm italic">${text}</p>
+                        </div>
+                    </div>
+                `;
+            } else {
+                resultEl.innerHTML = '';
+            }
+        };
+
+        const renderForm = () => {
+            const container = select('#app-container');
+            if (!container) return;
+
+            container.innerHTML = `
+                <div class="flex flex-col items-center mb-6">
+                    <h1 class="text-3xl font-extrabold text-gray-800">
+                        Contact & Analysis
+                    </h1>
+                    <p class="text-xs text-gray-400 mt-2">
+                        User ID: <span id="user-id-display" class="font-mono text-gray-600 break-all">Loading...</span>
+                    </p>
+                </div>
+
+                <div id="auth-status"></div>
+                <div id="status-message"></div>
+                
+                <form id="contact-form" class="space-y-4">
+                    <!-- Name Input -->
+                    <div class="relative mb-6">
+                        ${getIcon('User', 'absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-indigo-400')}
+                        <input type="text" id="name-input" placeholder="Full Name (e.g., Jane Doe)" required 
+                            class="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 shadow-sm text-gray-700" />
+                    </div>
+                    
+                    <!-- Phone Input -->
+                    <div class="relative mb-6">
+                        ${getIcon('Phone', 'absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-indigo-400')}
+                        <input type="tel" id="phone-input" placeholder="Phone Number (e.g., 442079460199)" maxlength="15" required 
+                            class="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 shadow-sm text-gray-700" />
+                    </div>
+
+                    <button type="submit" id="submit-button" disabled
+                        class="w-full bg-indigo-600 text-white font-semibold py-3 px-4 rounded-xl shadow-md hover:bg-indigo-700 transition duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2">
+                        <span id="submit-text">Submit & Analyze</span>
+                    </button>
+                </form>
+
+                <div id="prediction-result" class="mt-8"></div>
+                <div id="last-submission" class="mt-8 pt-6 border-t border-gray-200 hidden">
+                    <h3 class="text-xl font-semibold text-gray-700 mb-3">Last Submission Details</h3>
+                    <p class="text-sm text-gray-600">Name: <span id="last-name" class="font-medium text-gray-800"></span></p>
+                    <p class="text-sm text-gray-600">Phone: <span id="last-phone" class="font-medium text-gray-800"></span></p>
+                    <p class="text-xs text-gray-500">Saved to Firestore document: <span id="last-doc-id" class="font-mono"></span></p>
+                </div>
+            `;
+            
+            // Re-attach listeners after rendering
+            select('#contact-form').addEventListener('submit', handleFormSubmit);
+            select('#phone-input').addEventListener('input', (e) => {
+                // Ensure only digits are entered
+                e.target.value = e.target.value.replace(/\D/g, '');
+            });
+        };
+
+        const updateSubmitButton = () => {
+            const button = select('#submit-button');
+            const textSpan = select('#submit-text');
+            if (!button || !textSpan) return;
+
+            button.disabled = !isAuthReady || isSubmitting || isPredicting;
+
+            let buttonText = 'Submit & Analyze';
+            if (isSubmitting) {
+                buttonText = 'Saving...';
+            } else if (isPredicting) {
+                buttonText = 'Predicting...';
+            }
+            
+            const loaderHtml = (isSubmitting || isPredicting) ? getIcon('Loader', 'w-5 h-5 animate-spin mr-2') : '';
+            button.innerHTML = `${loaderHtml}<span id="submit-text">${buttonText}</span>`;
+        };
+
+
+        // =========================================================
+        // 2. FIREBASE & AUTHENTICATION
+        // =========================================================
+
+        const initFirebase = () => {
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.warn("Firebase config is empty. Skipping initialization.");
+                isAuthReady = true;
+                updateSubmitButton();
+                select('#auth-status').innerHTML = `
+                    <div class="bg-red-50 border border-red-200 p-4 rounded-xl mb-6 flex items-center justify-center text-red-700 shadow-md">
+                        ${getIcon('AlertTriangle', 'w-5 h-5 mr-3')}
+                        <p class="font-semibold">FIREBASE DISABLED: Configuration Missing.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            setLogLevel('debug');
+            
+            try {
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                const authenticate = async () => {
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) {
+                        console.error("Firebase Auth Error:", error);
+                        updateStatus("Authentication failed. Check console for details.", 'error');
+                    }
+                };
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        isAuthReady = true;
+                        select('#user-id-display').textContent = userId;
+                        console.log(`Authenticated with UID: ${userId}`);
+                    } else {
+                        authenticate();
+                    }
+                    updateSubmitButton();
+                });
+
+            } catch (e) {
+                console.error("Firebase Initialization Error:", e);
+                updateStatus("Firebase failed to initialize. Check console.", 'error');
+                isAuthReady = true;
+                updateSubmitButton();
+            }
+        };
+
+
+        // =========================================================
+        // 3. API CALLS & PERSISTENCE LOGIC
+        // =========================================================
+
+        const predictCountryOfOrigin = async (contactName, contactNumber) => {
+            isPredicting = true;
+            renderPrediction(null);
+            updateSubmitButton();
+            updateStatus('Requesting country analysis...', 'info');
+
+            const userQuery = `Analyze the name "${contactName}" and the phone number "${contactNumber}". Based on international dialing codes and typical naming conventions, predict the most likely country of origin for this person. Provide a single, concise country name and an explanation in a single paragraph.`;
+
+            const apiKey = ""; 
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ "google_search": {} }],
+                systemInstruction: {
+                    parts: [{ text: "You are an expert geopolitical and name analysis assistant." }]
+                },
+            };
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API call failed with status: ${response.status}`);
+                }
+
+                const result = await response.json();
+                const text = result.candidates?.[0]?.content?.parts?.[0]?.text || "Could not determine country of origin.";
+                
+                renderPrediction(text);
+
+            } catch (err) {
+                console.error("Gemini API Error:", err);
+                renderPrediction("Prediction service failed due to an API error. See console for details.");
+            } finally {
+                isPredicting = false;
+                updateSubmitButton();
+            }
+        };
+
+        const saveContactToFirestore = async (data) => {
+            if (!db || !userId) {
+                throw new Error("Firestore or User ID not available for saving.");
+            }
+            
+            // Public collection path
+            const contactRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'contacts'));
+            
+            const saveData = {
+                ...data,
+                userId: userId,
+                createdAt: serverTimestamp(),
+            };
+
+            await setDoc(contactRef, saveData);
+            console.log("Document successfully written with ID:", contactRef.id);
+            return contactRef.id;
+        };
+
+
+        // =========================================================
+        // 4. MAIN EVENT HANDLER
+        // =========================================================
+
+        const handleFormSubmit = async (e) => {
+            e.preventDefault();
+            
+            const name = select('#name-input').value.trim();
+            const phoneNumber = select('#phone-input').value.trim();
+            const phoneRegex = /^\d{7,15}$/; 
+
+            // Reset UI states
+            select('#last-submission').classList.add('hidden');
+            renderPrediction(null);
+            updateStatus(null);
+            
+            if (!name || !phoneRegex.test(phoneNumber)) {
+                updateStatus('Please enter a valid name and phone number (7-15 digits only).', 'error');
+                return;
+            }
+
+            isSubmitting = true;
+            updateSubmitButton();
+
+            const contactData = { name, phoneNumber };
+            let docId = 'N/A (No DB)';
+            let statusMessage = 'Data analysis started.';
+            
+            try {
+                // 1. Save to Firestore
+                if (db) {
+                    updateStatus('Saving contact data to Firestore...', 'info');
+                    docId = await saveContactToFirestore(contactData);
+                    statusMessage = 'Data saved successfully! Analysis pending...';
+                }
+
+                // 2. Call Gemini for prediction
+                await predictCountryOfOrigin(name, phoneNumber);
+
+                // 3. Update UI
+                select('#last-name').textContent = name;
+                select('#last-phone').textContent = phoneNumber;
+                select('#last-doc-id').textContent = docId;
+                select('#last-submission').classList.remove('hidden');
+
+                select('#name-input').value = '';
+                select('#phone-input').value = '';
+                
+                updateStatus('Submission complete: Data saved and analyzed!', 'success');
+
+
+            } catch (error) {
+                console.error("Submission Process Failed:", error);
+                updateStatus(error.message || "An unexpected error occurred during submission.", 'error');
+            } finally {
+                isSubmitting = false;
+                updateSubmitButton();
+            }
+        };
+
+
+        // =========================================================
+        // 5. LIFECYCLE
+        // =========================================================
+
+        window.onload = () => {
+            // 1. Render the HTML structure
+            renderForm();
+            // 2. Initialize Firebase and start authentication
+            initFirebase();
+            // 3. Initial button state update
+            updateSubmitButton();
+        };
+
+    </script>
+</body>
+</html>
